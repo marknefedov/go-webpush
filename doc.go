@@ -1,10 +1,13 @@
 // Package webpush provides helpers for sending Web Push notifications from Go.
 //
-// The package implements RFC 8291 content encryption, RFC 8292 VAPID
-// authentication, and the RFC 8030 delivery headers used by push services:
-// TTL, Urgency, and Topic.
+// The client-based API implements RFC 8188 / RFC 8291 content
+// encryption, RFC 8292 VAPID authentication and reuse, and RFC 8030 request
+// metadata such as TTL, Urgency, Topic, and receipt-request headers.
 //
-// It is intentionally focused on sending a single encrypted push message to an
-// existing Push API subscription. Subscription collection, browser integration,
-// and push service management are left to the caller.
+// It is intentionally focused on application-server sends to existing Push API
+// subscriptions. Subscription creation, browser integration, and live receipt
+// monitoring are left to the caller.
+//
+// The package does not implement RFC 8030 subscription-set creation or live
+// HTTP/2 receipt consumption.
 package webpush

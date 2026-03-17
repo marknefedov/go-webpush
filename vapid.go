@@ -1,6 +1,7 @@
 package webpush
 
 import (
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -16,6 +17,14 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+)
+
+var (
+	generateECDSAPrivateKey = func() (*ecdsa.PrivateKey, error) { return ecdsa.GenerateKey(elliptic.P256(), rand.Reader) }
+	ecdsaPublicKeyToECDH    = func(pub *ecdsa.PublicKey) (*ecdh.PublicKey, error) { return pub.ECDH() }
+	marshalPKCS8PrivateKey  = x509.MarshalPKCS8PrivateKey
+	parsePKCS8PrivateKey    = x509.ParsePKCS8PrivateKey
+	encodePEMToMemory       = pem.EncodeToMemory
 )
 
 // VAPIDKeys is a public-private keypair for use in VAPID.
@@ -117,12 +126,12 @@ func (v *VAPIDKeys) UnmarshalJSON(b []byte) error {
 
 // GenerateVAPIDKeys generates a VAPID keypair (an ECDSA keypair on the P-256 curve).
 func GenerateVAPIDKeys() (result *VAPIDKeys, err error) {
-	private, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	private, err := generateECDSAPrivateKey()
 	if err != nil {
 		return
 	}
 
-	pubKeyECDH, err := private.PublicKey.ECDH()
+	pubKeyECDH, err := ecdsaPublicKeyToECDH(&private.PublicKey)
 	if err != nil {
 		return
 	}
@@ -156,45 +165,28 @@ func makePublicKeyString(privKey *ecdsa.PrivateKey) (result string, err error) {
 	// to get the raw bytes, we have to convert the public key to *ecdh.PublicKey
 	// this type assertion (from the crypto.PublicKey returned by (*ecdsa.PrivateKey).Public()
 	// to *ecdsa.PublicKey) cannot fail:
-	publicKey, err := privKey.Public().(*ecdsa.PublicKey).ECDH()
+	publicKey, err := ecdsaPublicKeyToECDH(privKey.Public().(*ecdsa.PublicKey))
 	if err != nil {
 		return // should not be possible if we confirmed P256 already
 	}
 	return base64.RawURLEncoding.EncodeToString(publicKey.Bytes()), nil
 }
 
-func getVAPIDAuthorizationHeader(
+func buildVAPIDAuthorizationHeader(
 	endpoint string,
-	subject string,
+	normalizedSubject string,
 	vapidKeys *VAPIDKeys,
 	expiration time.Time,
 ) (string, error) {
 	if vapidKeys == nil || vapidKeys.privateKey == nil {
 		return "", ErrMissingVAPIDKeys
 	}
-	if expiration.IsZero() {
-		expiration = time.Now().Add(time.Hour * 12)
-	}
-	now := time.Now()
-	if expiration.Before(now) {
-		return "", fmt.Errorf("%w: must not be in the past", ErrInvalidExpiration)
-	}
-	if expiration.After(now.Add(24 * time.Hour)) {
-		return "", fmt.Errorf("%w: must be within 24 hours", ErrInvalidExpiration)
-	}
-
-	// Create the JWT token
-	subURL, err := url.Parse(endpoint)
+	audience, err := audienceFromEndpoint(endpoint)
 	if err != nil {
 		return "", err
 	}
-	normalizedSubject, err := normalizeSubject(subject)
-	if err != nil {
-		return "", err
-	}
-
 	token := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
-		"aud": subURL.Scheme + "://" + subURL.Host,
+		"aud": audience,
 		"exp": expiration.Unix(),
 		"sub": normalizedSubject,
 	})
@@ -207,18 +199,42 @@ func getVAPIDAuthorizationHeader(
 	return "vapid t=" + jwtString + ", k=" + vapidKeys.publicKey, nil
 }
 
+func resolveVAPIDExpiration(expiration, now time.Time) (time.Time, error) {
+	if expiration.IsZero() {
+		return now.UTC().Truncate(time.Minute).Add(12 * time.Hour), nil
+	}
+	if expiration.Before(now) {
+		return time.Time{}, fmt.Errorf("%w: must not be in the past", ErrInvalidExpiration)
+	}
+	if expiration.After(now.Add(24 * time.Hour)) {
+		return time.Time{}, fmt.Errorf("%w: must be within 24 hours", ErrInvalidExpiration)
+	}
+	return expiration, nil
+}
+
+func audienceFromEndpoint(endpoint string) (string, error) {
+	subURL, err := url.Parse(endpoint)
+	if err != nil {
+		return "", err
+	}
+	if subURL.Scheme == "" || subURL.Host == "" {
+		return "", fmt.Errorf("invalid endpoint URL")
+	}
+	return subURL.Scheme + "://" + subURL.Host, nil
+}
+
 // ExportVAPIDPrivateKeyPEM writes the private key in PKCS#8 PEM format to the specified file.
 // The public key can be obtained later via PublicKeyString.
 func (v *VAPIDKeys) ExportVAPIDPrivateKeyPEM() ([]byte, error) {
 	if v == nil || v.privateKey == nil {
 		return nil, fmt.Errorf("vapid keys are nil")
 	}
-	pkcs8bytes, err := x509.MarshalPKCS8PrivateKey(v.privateKey)
+	pkcs8bytes, err := marshalPKCS8PrivateKey(v.privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("could not marshal VAPID keys to PKCS#8: %w", err)
 	}
 	pemBlock := &pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8bytes}
-	pemBytes := pem.EncodeToMemory(pemBlock)
+	pemBytes := encodePEMToMemory(pemBlock)
 	if pemBytes == nil {
 		return nil, fmt.Errorf("could not encode VAPID keys as PEM")
 	}
@@ -231,7 +247,7 @@ func LoadVAPIDPrivateKeyPEM(pemBytes []byte) (*VAPIDKeys, error) {
 	if pemBlock == nil {
 		return nil, fmt.Errorf("could not decode PEM block with VAPID keys")
 	}
-	privKey, err := x509.ParsePKCS8PrivateKey(pemBlock.Bytes)
+	privKey, err := parsePKCS8PrivateKey(pemBlock.Bytes)
 	if err != nil {
 		return nil, err
 	}

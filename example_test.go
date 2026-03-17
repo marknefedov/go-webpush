@@ -1,14 +1,12 @@
 package webpush
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
-	"time"
 )
 
 type exampleHTTPClient struct{}
@@ -45,35 +43,57 @@ func ExampleGenerateVAPIDKeys() {
 	// Output: true
 }
 
-func ExampleVAPIDKeys_ExportVAPIDPrivateKeyPEM() {
+func ExampleClient_Send() {
 	keys, err := GenerateVAPIDKeys()
 	if err != nil {
 		panic(err)
 	}
-	pemBytes, err := keys.ExportVAPIDPrivateKeyPEM()
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(bytes.HasPrefix(pemBytes, []byte("-----BEGIN PRIVATE KEY-----")))
-	// Output: true
-}
-
-func ExampleSendNotification() {
-	keys, err := GenerateVAPIDKeys()
-	if err != nil {
-		panic(err)
-	}
-	resp, err := SendNotification(context.Background(), []byte("Hello from Go!"), exampleSubscription(), &Options{
-		HTTPClient:      exampleHTTPClient{},
-		Subject:         "user@example.com",
-		VAPIDKeys:       keys,
-		TTL:             60,
-		VAPIDExpiration: time.Now().Add(12 * time.Hour),
+	client := NewClient(Config{HTTPClient: exampleHTTPClient{}})
+	result, err := client.Send(context.Background(), []byte("Hello from Go!"), exampleSubscription(), SendOptions{
+		Subject:   "user@example.com",
+		VAPIDKeys: keys,
+		TTL:       60,
 	})
 	if err != nil {
 		panic(err)
 	}
-	defer resp.Body.Close()
-	fmt.Println(resp.StatusCode)
-	// Output: 201
+	defer result.Response.Body.Close()
+	fmt.Println(result.StatusCode, result.RecordCount, result.NoPayload)
+	// Output: 201 1 false
+}
+
+func ExampleClient_Send_noPayload() {
+	keys, err := GenerateVAPIDKeys()
+	if err != nil {
+		panic(err)
+	}
+	client := NewClient(Config{HTTPClient: exampleHTTPClient{}})
+	result, err := client.Send(context.Background(), nil, exampleSubscription(), SendOptions{
+		Subject:             "user@example.com",
+		VAPIDKeys:           keys,
+		RequestReceipt:      true,
+		ReceiptSubscription: "https://app.example/receipts",
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer result.Response.Body.Close()
+	fmt.Println(result.StatusCode, result.NoPayload)
+	// Output: 201 true
+}
+
+func ExampleClient_SendBatch() {
+	keys, err := GenerateVAPIDKeys()
+	if err != nil {
+		panic(err)
+	}
+	client := NewClient(Config{HTTPClient: exampleHTTPClient{}})
+	subs := []*Subscription{exampleSubscription(), exampleSubscription()}
+	attempts := client.SendBatch(context.Background(), []byte("Hello from Go!"), subs, SendOptions{
+		Subject:   "user@example.com",
+		VAPIDKeys: keys,
+		TTL:       60,
+	})
+	fmt.Println(len(attempts), attempts[0].Err == nil, attempts[1].Err == nil)
+	// Output: 2 true true
 }

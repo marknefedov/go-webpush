@@ -6,14 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/marknefedov/go-webpush"
+	webpush "github.com/marknefedov/go-webpush"
 )
 
-func SaveVAPIDKeysPEM(filename string, keys *webpush.VAPIDKeys) error {
+func saveVAPIDKeysPEM(filename string, keys *webpush.VAPIDKeys) error {
 	if keys == nil {
 		return fmt.Errorf("vapid keys are nil")
 	}
@@ -21,14 +22,10 @@ func SaveVAPIDKeysPEM(filename string, keys *webpush.VAPIDKeys) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filename, pem, 0600)
+	return os.WriteFile(filename, pem, 0o600)
 }
 
-// SaveVAPIDKeysJSON marshals VAPID keys as Web-push–style JSON and writes to file.
-// The JSON object contains base64url-encoded fields:
-//
-//	{"publicKey": "...","privateKey": "..."}.
-func SaveVAPIDKeysJSON(filename string, keys *webpush.VAPIDKeys) error {
+func saveVAPIDKeysJSON(filename string, keys *webpush.VAPIDKeys) error {
 	if keys == nil {
 		return fmt.Errorf("vapid keys are nil")
 	}
@@ -36,11 +33,10 @@ func SaveVAPIDKeysJSON(filename string, keys *webpush.VAPIDKeys) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filename, j, 0600)
+	return os.WriteFile(filename, j, 0o600)
 }
 
-// LoadVAPIDKeysJSON reads Web-push–style JSON and reconstructs VAPIDKeys.
-func LoadVAPIDKeysJSON(filename string) (*webpush.VAPIDKeys, error) {
+func loadVAPIDKeysJSON(filename string) (*webpush.VAPIDKeys, error) {
 	b, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, err
@@ -52,7 +48,7 @@ func LoadVAPIDKeysJSON(filename string) (*webpush.VAPIDKeys, error) {
 	return vk, nil
 }
 
-func LoadVAPIDKeysPEM(filename string) (*webpush.VAPIDKeys, error) {
+func loadVAPIDKeysPEM(filename string) (*webpush.VAPIDKeys, error) {
 	b, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, err
@@ -61,109 +57,101 @@ func LoadVAPIDKeysPEM(filename string) (*webpush.VAPIDKeys, error) {
 }
 
 func main() {
-	vk1, err := LoadVAPIDKeysPEM("vapid_private.pem")
+	vk1, err := loadVAPIDKeysPEM("vapid_private.pem")
 	if err != nil {
-		log.Printf("could not load VAPID keys from PEM: %v\n", err)
+		log.Printf("could not load VAPID keys from PEM: %v", err)
 	}
-	vk2, err := LoadVAPIDKeysJSON("vapid_keys.json")
+	vk2, err := loadVAPIDKeysJSON("vapid_keys.json")
 	if err != nil {
-		log.Printf("could not load VAPID keys from JSON: %v\n", err)
+		log.Printf("could not load VAPID keys from JSON: %v", err)
 	}
+
 	var vapidKeys *webpush.VAPIDKeys
 	if vk1 != nil && vk2 != nil && vk1.Equal(vk2) {
 		log.Println("VAPID keys are equal")
-		log.Println("Using loaded keys")
 		vapidKeys = vk1
 	} else {
 		log.Println("Generating new VAPID keys")
-		var err error
 		vapidKeys, err = webpush.GenerateVAPIDKeys()
-		err = SaveVAPIDKeysPEM("vapid_private.pem", vapidKeys)
 		if err != nil {
 			log.Fatal(err)
 		}
-		err = SaveVAPIDKeysJSON("vapid_keys.json", vapidKeys)
-		if err != nil {
+		if err := saveVAPIDKeysPEM("vapid_private.pem", vapidKeys); err != nil {
+			log.Fatal(err)
+		}
+		if err := saveVAPIDKeysJSON("vapid_keys.json", vapidKeys); err != nil {
 			log.Fatal(err)
 		}
 	}
-	keysJson, err := json.Marshal(vapidKeys)
+
+	keysJSON, err := json.Marshal(vapidKeys)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("VAPID keys:", string(keysJson))
-	fmt.Println("Enter subscription: ")
-	scanner := bufio.NewScanner(os.Stdin)
+	fmt.Println("VAPID keys:", string(keysJSON))
+	fmt.Println("Enter subscription JSON:")
+
+	sub, err := readSubscription(os.Stdin)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	client := webpush.NewClient(webpush.Config{
+		HTTPClient: &http.Client{Timeout: 10 * time.Second},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	result, err := client.Send(ctx, []byte("Test"), sub, webpush.SendOptions{
+		Subject:             "example@example.com",
+		VAPIDKeys:           vapidKeys,
+		TTL:                 30,
+		RequestReceipt:      true,
+		ReceiptSubscription: "https://example.com/receipts",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println("Status:", result.StatusCode)
+	fmt.Println("Records:", result.RecordCount)
+	fmt.Println("No payload:", result.NoPayload)
+	fmt.Println("Receipt subscription:", result.ReceiptSubscription)
+}
+
+func readSubscription(r *os.File) (*webpush.Subscription, error) {
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 	var raw strings.Builder
-	sub := &webpush.Subscription{}
-	parsed := false
-
-	type subscriptionEnvelope struct {
-		Subscription *webpush.Subscription `json:"subscription"`
-	}
-	isValid := func(s *webpush.Subscription) bool {
-		return s != nil && s.Endpoint != "" && s.Keys.P256dh != nil
-	}
-
-	for {
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				log.Fatal(err)
-			}
-			break
-		}
+	for scanner.Scan() {
 		raw.WriteString(scanner.Text())
 		raw.WriteByte('\n')
 		attempt := strings.TrimSpace(raw.String())
-		if len(attempt) == 0 {
+		if attempt == "" {
 			continue
 		}
-		tmp := new(webpush.Subscription)
-		if json.Unmarshal([]byte(attempt), tmp) == nil && isValid(tmp) {
-			sub = tmp
-			parsed = true
-			break
-		}
-		var env subscriptionEnvelope
-		if json.Unmarshal([]byte(attempt), &env) == nil && isValid(env.Subscription) {
-			sub = env.Subscription
-			parsed = true
-			break
+		sub, err := parseSubscription(attempt)
+		if err == nil {
+			return sub, nil
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return parseSubscription(strings.TrimSpace(raw.String()))
+}
 
-	if !parsed {
-		attempt := strings.TrimSpace(raw.String())
-		tmp := new(webpush.Subscription)
-		if json.Unmarshal([]byte(attempt), tmp) == nil && isValid(tmp) {
-			sub = tmp
-		} else {
-			var env subscriptionEnvelope
-			if json.Unmarshal([]byte(attempt), &env) == nil && isValid(env.Subscription) {
-				sub = env.Subscription
-			} else {
-				log.Fatal("could not parse a valid subscription from input (expecting a PushSubscription or {\"subscription\": {...}})")
-			}
-		}
+func parseSubscription(input string) (*webpush.Subscription, error) {
+	sub := new(webpush.Subscription)
+	if err := json.Unmarshal([]byte(input), sub); err == nil && sub.Endpoint != "" && sub.Keys.P256dh != nil {
+		return sub, nil
 	}
-
-	fmt.Println("Subscription:", sub)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	resp, err := webpush.SendNotification(
-		ctx,
-		[]byte("Test"),
-		sub,
-		&webpush.Options{
-			Subject:         "example@example.com", // Do not include "mailto:"
-			VAPIDKeys:       vapidKeys,
-			TTL:             30,
-			VAPIDExpiration: time.Now().Add(12 * time.Hour),
-		},
-	)
-	if err != nil {
-		log.Fatal(err)
+	var env struct {
+		Subscription *webpush.Subscription `json:"subscription"`
 	}
-	fmt.Println("Response:", resp)
+	if err := json.Unmarshal([]byte(input), &env); err == nil && env.Subscription != nil && env.Subscription.Endpoint != "" && env.Subscription.Keys.P256dh != nil {
+		return env.Subscription, nil
+	}
+	return nil, fmt.Errorf("could not parse a valid subscription from input")
 }
