@@ -127,6 +127,33 @@ func TestVAPIDKeyFromECDSA(t *testing.T) {
 	}
 }
 
+func TestVAPIDKeysEqual_NilSafety(t *testing.T) {
+	var nilKeys *VAPIDKeys
+	if !nilKeys.Equal(nil) {
+		t.Fatalf("expected nil keys to compare equal to nil")
+	}
+
+	keys, err := GenerateVAPIDKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if nilKeys.Equal(keys) {
+		t.Fatalf("expected nil keys to compare unequal to non-nil keys")
+	}
+	if keys.Equal(nil) {
+		t.Fatalf("expected non-nil keys to compare unequal to nil")
+	}
+
+	var zeroA, zeroB VAPIDKeys
+	if !zeroA.Equal(&zeroB) {
+		t.Fatalf("expected zero-value keys to compare equal")
+	}
+	if zeroA.Equal(keys) {
+		t.Fatalf("expected zero-value keys to compare unequal to initialized keys")
+	}
+}
+
 func TestVAPID_UnmarshalJSONErrors(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -269,6 +296,10 @@ func TestVAPID_PEMExportLoad(t *testing.T) {
 }
 
 func TestECDSAToVAPIDKeys_InvalidCurve(t *testing.T) {
+	if _, err := ECDSAToVAPIDKeys(nil); err == nil {
+		t.Fatalf("expected error for nil private key in ECDSAToVAPIDKeys")
+	}
+
 	p384key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)

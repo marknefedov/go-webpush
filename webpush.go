@@ -75,6 +75,12 @@ type marshaledKeys struct {
 
 // MarshalJSON implements json.Marshaler, allowing serialization to JSON.
 func (k *Keys) MarshalJSON() ([]byte, error) {
+	if k == nil {
+		return nil, fmt.Errorf("keys are nil")
+	}
+	if k.P256dh == nil {
+		return nil, fmt.Errorf("keys.p256dh is nil")
+	}
 	m := marshaledKeys{
 		Auth:   base64.RawStdEncoding.EncodeToString(k.Auth[:]),
 		P256dh: base64.RawStdEncoding.EncodeToString(k.P256dh.Bytes()),

@@ -35,6 +35,12 @@ func (v *VAPIDKeys) PrivateKey() *ecdsa.PrivateKey {
 
 // Equal compares two VAPIDKeys for equality.
 func (v *VAPIDKeys) Equal(o *VAPIDKeys) bool {
+	if v == nil || o == nil {
+		return v == nil && o == nil
+	}
+	if v.privateKey == nil || o.privateKey == nil {
+		return v.privateKey == nil && o.privateKey == nil && v.publicKey == o.publicKey
+	}
 	return v.privateKey.Equal(o.privateKey)
 }
 
@@ -129,6 +135,9 @@ func GenerateVAPIDKeys() (result *VAPIDKeys, err error) {
 
 // ECDSAToVAPIDKeys wraps an existing ecdsa.PrivateKey in VAPIDKeys for use in VAPID header signing.
 func ECDSAToVAPIDKeys(privKey *ecdsa.PrivateKey) (result *VAPIDKeys, err error) {
+	if privKey == nil {
+		return nil, fmt.Errorf("private key is nil")
+	}
 	if privKey.Curve != elliptic.P256() {
 		return nil, fmt.Errorf("invalid curve for private key %v", privKey.Curve)
 	}

@@ -109,3 +109,15 @@ func TestSendTooLargeNotification(t *testing.T) {
 		t.Fatalf("Error is nil, expected=%s", ErrRecordSizeTooSmall)
 	}
 }
+
+func TestKeysMarshalJSON_NilSafety(t *testing.T) {
+	var nilKeys *Keys
+	if _, err := nilKeys.MarshalJSON(); err == nil {
+		t.Fatalf("expected error when marshaling nil Keys")
+	}
+
+	var keys Keys
+	if _, err := keys.MarshalJSON(); err == nil || !strings.Contains(err.Error(), "keys.p256dh is nil") {
+		t.Fatalf("expected nil p256dh error, got: %v", err)
+	}
+}
