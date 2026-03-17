@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -19,57 +20,46 @@ import (
 
 func TestVAPID(t *testing.T) {
 	s := getStandardEncodedTestSubscription()
-	sub := "test@test.com"
+	subject := "test@test.com"
 
-	// Generate vapid keys
 	vapidKeys, err := GenerateVAPIDKeys()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Get authentication header
 	vapidAuthHeader, err := getVAPIDAuthorizationHeader(
 		s.Endpoint,
-		sub,
+		subject,
 		vapidKeys,
-		time.Now().Add(time.Hour*12),
+		time.Now().Add(12*time.Hour),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Validate the token in the Authorization header
 	tokenString := getTokenFromAuthorizationHeader(vapidAuthHeader, t)
 
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodECDSA); !ok {
-			t.Fatal("Wrong validation method need ECDSA!")
+			t.Fatal("wrong validation method need ECDSA")
 		}
-
-		// To decode the token it needs the VAPID public key
 		return vapidKeys.privateKey.Public(), nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Check the claims on the token
-	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
-		expectedSub := fmt.Sprintf("mailto:%s", sub)
-		if expectedSub != claims["sub"] {
-			t.Fatalf(
-				"Incorrect mailto, expected=%s, got=%s",
-				expectedSub,
-				claims["sub"],
-			)
-		}
 
+	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+		expectedSub := fmt.Sprintf("mailto:%s", subject)
+		if expectedSub != claims["sub"] {
+			t.Fatalf("incorrect mailto, expected=%s, got=%s", expectedSub, claims["sub"])
+		}
 		if claims["aud"] == "" {
-			t.Fatal("Audience should not be empty")
+			t.Fatal("audience should not be empty")
 		}
 	} else {
 		t.Fatal(err)
 	}
-
 }
 
 func TestVAPIDKeys(t *testing.T) {
@@ -97,16 +87,15 @@ func TestVAPIDKeys(t *testing.T) {
 	}
 }
 
-// Helper function for extracting the token from the Authorization header
 func getTokenFromAuthorizationHeader(tokenHeader string, t *testing.T) string {
 	hsplit := strings.Split(tokenHeader, " ")
 	if len(hsplit) < 3 {
-		t.Fatal("Failed to auth split header")
+		t.Fatal("failed to auth split header")
 	}
 
 	tsplit := strings.Split(hsplit[1], "=")
 	if len(tsplit) < 2 {
-		t.Fatal("Failed to t split header on =")
+		t.Fatal("failed to t split header on =")
 	}
 
 	return tsplit[1][:len(tsplit[1])-1]
@@ -173,24 +162,23 @@ func TestVAPID_UnmarshalJSONErrors(t *testing.T) {
 		{
 			name: "invalidLength",
 			jsonStr: func() string {
-				short := base64.RawURLEncoding.EncodeToString([]byte{1, 2}) // len=2, needs 32
+				short := base64.RawURLEncoding.EncodeToString([]byte{1, 2})
 				return `{"privateKey":"` + short + `"}`
 			}(),
 			errSub: "invalid privateKey length",
 		},
 	}
 	for _, tc := range cases {
-		c := tc
-		t.Run(c.name, func(t *testing.T) {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
 			var v VAPIDKeys
-			err := json.Unmarshal([]byte(c.jsonStr), &v)
-			if err == nil || !strings.Contains(err.Error(), c.errSub) {
-				t.Fatalf("expected error containing %q, got: %v", c.errSub, err)
+			err := json.Unmarshal([]byte(tc.jsonStr), &v)
+			if err == nil || !strings.Contains(err.Error(), tc.errSub) {
+				t.Fatalf("expected error containing %q, got: %v", tc.errSub, err)
 			}
 		})
 	}
 
-	// Mismatched public key case requires a valid 32-byte scalar
 	keys, err := GenerateVAPIDKeys()
 	if err != nil {
 		t.Fatal(err)
@@ -219,11 +207,9 @@ func TestVAPID_GetAuthorizationHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// invalid URL
 	if _, err := getVAPIDAuthorizationHeader(":// malformed", "user@example.com", keys, time.Now()); err == nil {
 		t.Fatalf("expected error for invalid endpoint URL")
 	}
-	// HTTPS subscriber should be accepted and produce a header
 	hdr, err := getVAPIDAuthorizationHeader("https://push.example/v2/token", "https://application.server", keys, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -233,14 +219,93 @@ func TestVAPID_GetAuthorizationHeader(t *testing.T) {
 	}
 }
 
+func TestVAPID_SubjectValidation(t *testing.T) {
+	keys, err := GenerateVAPIDKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name    string
+		subject string
+		wantErr error
+	}{
+		{name: "empty", subject: "", wantErr: ErrInvalidSubject},
+		{name: "mailtoMissingAddress", subject: "mailto:", wantErr: ErrInvalidSubject},
+		{name: "httpURL", subject: "http://example.com", wantErr: ErrInvalidSubject},
+		{name: "nonsense", subject: "not a subject", wantErr: ErrInvalidSubject},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := getVAPIDAuthorizationHeader("https://push.example/v2/token", tc.subject, keys, time.Now().Add(time.Hour))
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("expected %v, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestVAPID_SubjectNormalization(t *testing.T) {
+	got, err := normalizeSubject("user@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "mailto:user@example.com" {
+		t.Fatalf("expected mailto normalization, got %q", got)
+	}
+
+	got, err = normalizeSubject("mailto:user@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "mailto:user@example.com" {
+		t.Fatalf("expected mailto subject, got %q", got)
+	}
+
+	got, err = normalizeSubject("https://example.com/contact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "https://example.com/contact" {
+		t.Fatalf("expected https subject, got %q", got)
+	}
+}
+
+func TestVAPID_ExpirationValidation(t *testing.T) {
+	keys, err := GenerateVAPIDKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = getVAPIDAuthorizationHeader("https://push.example/v2/token", "user@example.com", keys, time.Now().Add(-time.Minute))
+	if !errors.Is(err, ErrInvalidExpiration) {
+		t.Fatalf("expected invalid expiration error, got: %v", err)
+	}
+
+	_, err = getVAPIDAuthorizationHeader("https://push.example/v2/token", "user@example.com", keys, time.Now().Add(25*time.Hour))
+	if !errors.Is(err, ErrInvalidExpiration) {
+		t.Fatalf("expected invalid expiration error, got: %v", err)
+	}
+
+	_, err = getVAPIDAuthorizationHeader("https://push.example/v2/token", "user@example.com", keys, time.Time{})
+	if err != nil {
+		t.Fatalf("expected zero expiration default to succeed, got: %v", err)
+	}
+}
+
+func TestVAPID_MissingKeys(t *testing.T) {
+	_, err := getVAPIDAuthorizationHeader("https://push.example/v2/token", "user@example.com", nil, time.Now().Add(time.Hour))
+	if !errors.Is(err, ErrMissingVAPIDKeys) {
+		t.Fatalf("expected missing keys error, got: %v", err)
+	}
+}
+
 func TestVAPID_PEMExportLoad(t *testing.T) {
-	// Nil receiver export
 	var nilKeys *VAPIDKeys
 	if _, err := nilKeys.ExportVAPIDPrivateKeyPEM(); err == nil {
 		t.Fatalf("expected error when exporting nil keys")
 	}
 
-	// Round-trip export/load
 	keys, err := GenerateVAPIDKeys()
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +322,6 @@ func TestVAPID_PEMExportLoad(t *testing.T) {
 		t.Fatalf("PEM round-trip did not preserve keys")
 	}
 
-	// Error cases for LoadVAPIDPrivateKeyPEM
 	t.Run("invalidPEM", func(t *testing.T) {
 		if _, err := LoadVAPIDPrivateKeyPEM([]byte("not pem")); err == nil {
 			t.Fatalf("expected error for invalid PEM input")
@@ -274,8 +338,9 @@ func TestVAPID_PEMExportLoad(t *testing.T) {
 			t.Fatal(err)
 		}
 		pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8})
-		if _, err := LoadVAPIDPrivateKeyPEM(pemBytes); err == nil {
-			t.Fatalf("expected error for non-ECDSA private key")
+		_, err = LoadVAPIDPrivateKeyPEM(pemBytes)
+		if err == nil || !strings.Contains(err.Error(), "*rsa.PrivateKey") {
+			t.Fatalf("expected real key type in error, got: %v", err)
 		}
 	})
 

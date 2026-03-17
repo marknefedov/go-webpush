@@ -24,6 +24,10 @@ const MaxRecordSize uint32 = 4096
 
 var (
 	ErrRecordSizeTooSmall = errors.New("record size too small for message")
+	ErrInvalidSubject     = errors.New("invalid subject")
+	ErrInvalidTopic       = errors.New("invalid topic")
+	ErrInvalidExpiration  = errors.New("invalid VAPID expiration")
+	ErrMissingVAPIDKeys   = errors.New("missing VAPID keys")
 
 	invalidAuthKeyLength = errors.New("invalid auth key length (must be 16)")
 
@@ -39,12 +43,12 @@ type HTTPClient interface {
 type Options struct {
 	HTTPClient      HTTPClient // Will replace it with *http.Client by default if not included
 	RecordSize      uint32     // Limit the record size
-	Subscriber      string     // Sub in VAPID JWT token
+	Subject         string     // Subject for the VAPID JWT token: email, mailto: URL, or HTTPS URL
 	Topic           string     // Set the Topic header to collapse pending messages (Optional)
 	TTL             int        // Set the TTL on the endpoint POST request, in seconds
 	Urgency         Urgency    // Set the Urgency header to change a message priority (Optional)
 	VAPIDKeys       *VAPIDKeys // VAPID public-private keypair to generate the VAPID Authorization header
-	VapidExpiration time.Time  // optional expiration for VAPID JWT token (defaults to now + 12 hours)
+	VAPIDExpiration time.Time  // Optional expiration for the VAPID JWT token (defaults to now + 12 hours)
 }
 
 // Keys represent a subscription's keys (its ECDH public key on the P-256 curve
@@ -149,36 +153,40 @@ func SendNotification(ctx context.Context, message []byte, s *Subscription, opti
 	if s.Keys.P256dh == nil {
 		return nil, fmt.Errorf("subscription keys.p256dh is required")
 	}
-	if options == nil {
-		options = &Options{}
+	var opts Options
+	if options != nil {
+		opts = *options
 	}
-	if options.TTL < 0 {
+	if opts.TTL < 0 {
 		return nil, fmt.Errorf("TTL must be >= 0")
 	}
-	if options.RecordSize == 0 {
-		options.RecordSize = MaxRecordSize
+	if opts.RecordSize == 0 {
+		opts.RecordSize = MaxRecordSize
 	}
-	if options.VAPIDKeys == nil {
-		return nil, fmt.Errorf("VAPIDKeys are required")
+	if opts.VAPIDKeys == nil {
+		return nil, ErrMissingVAPIDKeys
+	}
+	if err := validateTopic(opts.Topic); err != nil {
+		return nil, err
 	}
 
 	// Compose message body (RFC8291 encryption of the message)
-	body, err := EncryptNotification(message, s.Keys, options.RecordSize)
+	body, err := EncryptNotification(message, s.Keys, opts.RecordSize)
 	if err != nil {
 		return nil, err
 	}
 
 	vapidAuthHeader, err := getVAPIDAuthorizationHeader(
 		s.Endpoint,
-		options.Subscriber,
-		options.VAPIDKeys,
-		options.VapidExpiration,
+		opts.Subject,
+		opts.VAPIDKeys,
+		opts.VAPIDExpiration,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	return sendNotification(ctx, s.Endpoint, options, vapidAuthHeader, body)
+	return sendNotification(ctx, s.Endpoint, &opts, vapidAuthHeader, body)
 }
 
 // EncryptNotification implements the encryption algorithm specified by RFC 8291 for web push
@@ -294,13 +302,12 @@ func EncryptNotification(message []byte, keys Keys, recordSize uint32) ([]byte, 
 }
 
 func sendNotification(ctx context.Context, endpoint string, options *Options, vapidAuthHeader string, body []byte) (*http.Response, error) {
-	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(body))
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewBuffer(body))
 	if err != nil {
 		return nil, err
-	}
-
-	if ctx != nil {
-		req = req.WithContext(ctx)
 	}
 
 	req.Header.Set("Content-Encoding", "aes128gcm")
@@ -327,6 +334,29 @@ func sendNotification(ctx context.Context, endpoint string, options *Options, va
 	}
 
 	return client.Do(req)
+}
+
+func validateTopic(topic string) error {
+	if topic == "" {
+		return nil
+	}
+	if len(topic) > 32 {
+		return fmt.Errorf("%w: must be 32 characters or fewer", ErrInvalidTopic)
+	}
+	for _, r := range topic {
+		if r > 127 || !isTopicChar(byte(r)) {
+			return fmt.Errorf("%w: contains invalid character %q", ErrInvalidTopic, r)
+		}
+	}
+	return nil
+}
+
+func isTopicChar(ch byte) bool {
+	switch ch {
+	case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+		return true
+	}
+	return ch >= '0' && ch <= '9' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z'
 }
 
 // decodeSubscriptionKey decodes a base64 subscription key.

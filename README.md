@@ -69,11 +69,12 @@ func main() {
         []byte("Hello from Go!"), // payload (optional but recommended)
         &sub,
         &webpush.Options{
-            Subscriber: "user@example.com", // an email or URL
+            Subject:    "user@example.com", // an email or URL
             VAPIDKeys:  keys,
-            TTL:        60,                   // seconds push service should retain the message
+            TTL:        60,                 // seconds push service should retain the message
             // Urgency: webpush.UrgencyHigh,   // optional: VeryLow, Low, Normal, High
             // Topic:   "demo-1",             // optional: collapse key
+            // VAPIDExpiration: time.Now().Add(12 * time.Hour),
         },
     )
     if err != nil { log.Fatal(err) }

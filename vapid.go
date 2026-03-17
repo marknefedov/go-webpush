@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net/mail"
 	"net/url"
 	"strings"
 	"time"
@@ -164,12 +165,22 @@ func makePublicKeyString(privKey *ecdsa.PrivateKey) (result string, err error) {
 
 func getVAPIDAuthorizationHeader(
 	endpoint string,
-	subscriber string,
+	subject string,
 	vapidKeys *VAPIDKeys,
 	expiration time.Time,
 ) (string, error) {
+	if vapidKeys == nil || vapidKeys.privateKey == nil {
+		return "", ErrMissingVAPIDKeys
+	}
 	if expiration.IsZero() {
 		expiration = time.Now().Add(time.Hour * 12)
+	}
+	now := time.Now()
+	if expiration.Before(now) {
+		return "", fmt.Errorf("%w: must not be in the past", ErrInvalidExpiration)
+	}
+	if expiration.After(now.Add(24 * time.Hour)) {
+		return "", fmt.Errorf("%w: must be within 24 hours", ErrInvalidExpiration)
 	}
 
 	// Create the JWT token
@@ -177,16 +188,15 @@ func getVAPIDAuthorizationHeader(
 	if err != nil {
 		return "", err
 	}
-
-	// Unless the subscriber is an HTTPS URL, assume an e-mail address
-	if !strings.HasPrefix(subscriber, "https:") && !strings.HasPrefix(subscriber, "mailto:") {
-		subscriber = "mailto:" + subscriber
+	normalizedSubject, err := normalizeSubject(subject)
+	if err != nil {
+		return "", err
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
 		"aud": subURL.Scheme + "://" + subURL.Host,
 		"exp": expiration.Unix(),
-		"sub": subscriber,
+		"sub": normalizedSubject,
 	})
 
 	jwtString, err := token.SignedString(vapidKeys.privateKey)
@@ -227,7 +237,7 @@ func LoadVAPIDPrivateKeyPEM(pemBytes []byte) (*VAPIDKeys, error) {
 	}
 	privateKey, ok := privKey.(*ecdsa.PrivateKey)
 	if !ok {
-		return nil, fmt.Errorf("invalid type of private key %T", privateKey)
+		return nil, fmt.Errorf("invalid type of private key %T", privKey)
 	}
 	if privateKey.Curve != elliptic.P256() {
 		return nil, fmt.Errorf("invalid curve for private key %v", privateKey.Curve)
@@ -237,4 +247,29 @@ func LoadVAPIDPrivateKeyPEM(pemBytes []byte) (*VAPIDKeys, error) {
 		return nil, err
 	}
 	return &VAPIDKeys{privateKey: privateKey, publicKey: pub}, nil
+}
+
+func normalizeSubject(subject string) (string, error) {
+	subject = strings.TrimSpace(subject)
+	if subject == "" {
+		return "", fmt.Errorf("%w: subject is required", ErrInvalidSubject)
+	}
+	if strings.HasPrefix(subject, "mailto:") {
+		addr := strings.TrimPrefix(subject, "mailto:")
+		if _, err := mail.ParseAddress(addr); err != nil {
+			return "", fmt.Errorf("%w: invalid mailto address", ErrInvalidSubject)
+		}
+		return "mailto:" + addr, nil
+	}
+	if strings.Contains(subject, "://") {
+		u, err := url.Parse(subject)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return "", fmt.Errorf("%w: must be an https URL", ErrInvalidSubject)
+		}
+		return u.String(), nil
+	}
+	if _, err := mail.ParseAddress(subject); err == nil {
+		return "mailto:" + subject, nil
+	}
+	return "", fmt.Errorf("%w: must be an email, mailto: URI, or https URL", ErrInvalidSubject)
 }

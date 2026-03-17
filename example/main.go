@@ -156,9 +156,10 @@ func main() {
 		[]byte("Test"),
 		sub,
 		&webpush.Options{
-			Subscriber: "example@example.com", // Do not include "mailto:"
-			VAPIDKeys:  vapidKeys,
-			TTL:        30,
+			Subject:         "example@example.com", // Do not include "mailto:"
+			VAPIDKeys:       vapidKeys,
+			TTL:             30,
+			VAPIDExpiration: time.Now().Add(12 * time.Hour),
 		},
 	)
 	if err != nil {
