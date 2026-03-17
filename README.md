@@ -1,5 +1,5 @@
 # go-webpush
-[![Go Reference](https://pkg.go.dev/badge/github.com/marknefedov/go-webpush.svg)](https://pkg.go.dev/github.com/marknefedov/go-webpush)
+[![Go Reference](https://pkg.go.dev/badge/github.com/marknefedov/go-webpush/v2.svg)](https://pkg.go.dev/github.com/marknefedov/go-webpush/v2)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/marknefedov/go-webpush)
 [![GitHub release (latest SemVer)](https://img.shields.io/github/v/tag/marknefedov/go-webpush)](https://github.com/marknefedov/go-webpush/tag/latest)
 [![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/marknefedov/go-webpush/ci.yml?branch=master)](https://github.com/marknefedov/go-webpush/actions/workflows/ci.yml)
@@ -13,7 +13,7 @@ The library does not implement live receipt monitoring. It only supports request
 ## Installation
 
 ```bash
-go get github.com/marknefedov/go-webpush
+go get github.com/marknefedov/go-webpush/v2
 ```
 
 ## Quick start
@@ -26,7 +26,7 @@ package main
 import (
 	"os"
 
-	webpush "github.com/marknefedov/go-webpush"
+	webpush "github.com/marknefedov/go-webpush/v2"
 )
 
 func main() {
@@ -55,7 +55,7 @@ import (
 	"os"
 	"time"
 
-	webpush "github.com/marknefedov/go-webpush"
+	webpush "github.com/marknefedov/go-webpush/v2"
 )
 
 func main() {

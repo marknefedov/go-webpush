@@ -1,4 +1,4 @@
-module github.com/marknefedov/go-webpush
+module github.com/marknefedov/go-webpush/v2
 
 go 1.26
 

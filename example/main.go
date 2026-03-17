@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	webpush "github.com/marknefedov/go-webpush"
+	webpush "github.com/marknefedov/go-webpush/v2"
 )
 
 func saveVAPIDKeysPEM(filename string, keys *webpush.VAPIDKeys) error {
